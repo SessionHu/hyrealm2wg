@@ -80,6 +80,8 @@ func newWGHandoff(iface, peerKey string, lport int, keepalive, wait time.Duratio
 
 func (h *wgHandoff) Close() { h.cl.Close() }
 
+const recentHandshakeWindow = 2*time.Minute + 15*time.Second
+
 // apply must be called right after the punch socket has been closed. One netlink message
 // sets the listen port, the peer endpoint and the keepalive. (Setting a keepalive on a
 // running interface should make the kernel send one at once, which starts the handshake;
@@ -123,6 +125,24 @@ func (h *wgHandoff) apply(ctx context.Context, port int, peerStr string, punched
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+
+	if dev, err := h.cl.Device(h.iface); err == nil {
+		for _, p := range dev.Peers {
+			if p.PublicKey == h.peer {
+				if !p.LastHandshakeTime.IsZero() {
+					age := time.Since(p.LastHandshakeTime)
+					if age < recentHandshakeWindow {
+						st.OK = true
+						log.Printf("wg: no new handshake within %s, but peer had a handshake %.1fs ago (< %s); treating as ok",
+							h.wait, age.Seconds(), recentHandshakeWindow)
+						return st, nil
+					}
+				}
+				break
+			}
+		}
+	}
+
 	log.Printf("wg: no new handshake within %s", h.wait)
 	return st, nil
 }
